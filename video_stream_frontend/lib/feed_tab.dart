@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
 import 'package:video_stream_frontend/app_video/app_video.dart';
+import 'package:video_stream_frontend/app_video/widgets/app_controller.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 import 'package:video_stream_frontend/app_video/utils/preload_helpers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -97,7 +98,9 @@ class _FeedTabBackupState extends State<FeedTabBackup>
     _preloadDebounceTimer?.cancel();
     _pageController.removeListener(_onPageChanged);
     _pageController.dispose();
-    _controllerCache.keys.forEach(_disposeController);
+    _controllerCache.forEach((_, controller) {
+      controller.dispose();
+    });
     _controllerCache.clear();
     _isCacheDisposed = true;
     super.dispose();
@@ -362,7 +365,7 @@ class _FeedTabBackupState extends State<FeedTabBackup>
       },
       child:
           _isLoading
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: Skeleton())
               : _errorMessage != null
               ? Center(child: Text(_errorMessage!))
               : _videos.isEmpty
@@ -382,20 +385,16 @@ class _FeedTabBackupState extends State<FeedTabBackup>
                     key: Key('video-visibility-${id ?? ''}'),
                     onVisibilityChanged: (info) {
                       final isVisible = info.visibleFraction > 0.8;
-                      if (isVisible) {
+                      if (isVisible && id != null) {
                         _playOnlyActiveController(id);
-                      } else {
-                        if (id != null) _disposeController(id);
+                      } else if (id != null) {
+                        _disposeController(id); // Dispose khi không visible
                       }
                     },
                     child: FutureBuilder<VideoPlayerController?>(
                       key: ValueKey('$id-$videoUrl-${index == _currentPage}'),
                       future:
-                          (id != null &&
-                                  videoUrl != null &&
-                                  _controllerCache.containsKey(id))
-                              ? Future.value(_controllerCache[id])
-                              : (id != null && videoUrl != null)
+                          (id != null && videoUrl != null)
                               ? _getOrCreateController(
                                 videoUrl,
                                 id,
@@ -408,6 +407,7 @@ class _FeedTabBackupState extends State<FeedTabBackup>
                             controller != null &&
                             controller.value.isInitialized &&
                             !controller.value.hasError;
+
                         print(
                           '[FeedTab] TikTokVideoItem: id=$id, isActive=${index == _currentPage}, controller=$controller',
                         );
@@ -439,20 +439,20 @@ class _FeedTabBackupState extends State<FeedTabBackup>
     bool autoPlay = false,
   }) async {
     if (_isCacheDisposed) return null;
-    // Luôn chỉ giữ controller cho video đang active
-    if (_controllerCache.containsKey(id)) {
-      final controller = _controllerCache[id]!;
+    VideoPlayerController? controller = _controllerCache[id];
+    if (controller != null) {
       if (controller.value.hasError || !controller.value.isInitialized) {
+        controller.dispose();
         _controllerCache.remove(id);
+        controller = null;
       } else {
-        return controller;
+        return controller; // Tái sử dụng controller còn sống
       }
     }
-    // Nếu không phải video active, không tạo controller
     final isActive = _videos[_currentPage]['id']?.toString() == id;
-    if (!isActive) return null;
+    if (!isActive && !autoPlay) return null;
     try {
-      final controller = VideoPlayerController.networkUrl(Uri.parse(videoUrl));
+      controller = VideoPlayerController.networkUrl(Uri.parse(videoUrl));
       await controller.initialize();
       if (_isCacheDisposed) {
         controller.dispose();
@@ -463,6 +463,7 @@ class _FeedTabBackupState extends State<FeedTabBackup>
       return controller;
     } catch (e) {
       print('Controller init error: $e');
+      controller?.dispose();
       return null;
     }
   }
@@ -485,6 +486,7 @@ class _FeedTabBackupState extends State<FeedTabBackup>
   }
 
   void _pauseAllControllers() {
+    if (_isCacheDisposed) return;
     _controllerCache.forEach((_, controller) {
       if (controller.value.isPlaying) controller.pause();
     });
@@ -507,13 +509,12 @@ class _FeedTabBackupState extends State<FeedTabBackup>
   }
 
   void _playOnlyActiveController(String? activeId) {
+    if (_isCacheDisposed) return;
     _controllerCache.forEach((id, controller) {
-      if (id == activeId && controller.value.isInitialized) {
-        if (!controller.value.isPlaying) {
+      if (controller.value.isInitialized) {
+        if (id == activeId && !controller.value.isPlaying) {
           controller.play();
-        }
-      } else {
-        if (controller.value.isPlaying) {
+        } else if (id != activeId && controller.value.isPlaying) {
           controller.pause();
         }
       }
@@ -562,25 +563,34 @@ class _TikTokVideoItemState extends State<TikTokVideoItem>
             child: AppVideo(
               key: ValueKey('video-$id-${widget.isActive}'),
               controller: widget.controller!,
-              thumbnail: widget.thumbProvider,
               isActive: widget.isActive,
+            ),
+          ),
+        if (widget.thumbProvider != null)
+          Positioned.fill(
+            child: AnimatedOpacity(
+              opacity:
+                  (widget.isActive &&
+                          widget.controller != null &&
+                          widget.controller!.value.isInitialized &&
+                          !widget.controller!.value.hasError)
+                      ? 0.0
+                      : 1.0,
+              duration: const Duration(milliseconds: 500),
+              child: Image(
+                image: widget.thumbProvider!,
+                fit: BoxFit.cover,
+                width: double.infinity,
+                height: double.infinity,
+              ),
             ),
           )
         else
-          Positioned.fill(
-            child: Stack(
-              children: [
-                if (widget.thumbProvider != null)
-                  Image(
-                    image: widget.thumbProvider!,
-                    fit: BoxFit.cover,
-                    width: double.infinity,
-                    height: double.infinity,
-                  ),
-                const Center(child: CircularProgressIndicator()),
-              ],
-            ),
-          ),
+          const Center(child: Skeleton()),
+        if (widget.controller != null &&
+            widget.controller!.value.isInitialized &&
+            !widget.controller!.value.hasError)
+          Positioned.fill(child: AppController(controller: widget.controller!)),
         Positioned(
           left: 0,
           right: 0,
@@ -601,13 +611,7 @@ class VideoInfoOverlay extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Colors.transparent, Colors.black54, Colors.black87],
-        ),
-      ),
+      color: Colors.transparent,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
@@ -731,7 +735,7 @@ class Skeleton extends StatelessWidget {
       duration: const Duration(milliseconds: 200),
       width: double.infinity,
       height: double.infinity,
-      decoration: BoxDecoration(color: Colors.black12),
+      decoration: BoxDecoration(color: Colors.black),
     );
   }
 }

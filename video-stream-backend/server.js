@@ -213,7 +213,7 @@ function encodeToHls(inputPath, outputDir, quality) {
 function extractThumbnail(inputPath, outputDir) {
   return new Promise((resolve, reject) => {
     const thumbPath = path.join(outputDir, "thumbnail.jpg");
-    const tryTimes = ["0.1", "0.3", "0.5", "0.7", "1"];
+    const tryTimes = ["0.25", "0.45", "0.5", "0.7", "1"];
     let tried = 0;
 
     function tryExtract() {
