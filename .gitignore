@@ -1,0 +1,9 @@
+node_modules
+.vscode
+ios/build
+ios/Pods
+ios/Podfile.lock
+
+android/build
+your-key.jks
+package-lock.json
